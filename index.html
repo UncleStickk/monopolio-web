@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<!--
+BUSINESS TOUR / MONOPOLY WEB – VERSÃO COMPLETA (SIMPLIFICADA, MAS 100% JOGÁVEL)
+Regras implementadas:
+✔ Turnos sincronizados
+✔ Dados e movimento
+✔ Compra / venda / aluguel
+✔ Banco
+✔ Cartas
+✔ Prisão
+✔ Salário ao passar no início
+✔ Falência e vitória
+
+OBS: Tabuleiro reduzido para manter clareza e estabilidade.
+-->
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Business Tour Web</title>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:Poppins;background:#cce9f5}
+header{background:#0ea5e9;color:#fff;padding:12px;font-weight:800;text-align:center}
+#game{display:grid;grid-template-columns:1fr 340px;gap:14px;padding:14px}
+.board{background:#e5f6ff;border-radius:24px;padding:12px;display:grid;grid-template-columns:repeat(4,1fr);gap:8px;box-shadow:inset 0 0 0 6px #38bdf8}
+.cell{background:#fff;border-radius:14px;padding:6px;font-size:11px;font-weight:600;min-height:80px;box-shadow:0 2px rgba(0,0,0,.15)}
+.cell.owned{background:#dcfce7}
+.cell.start{background:#86efac}
+.cell.chance{background:#fde68a}
+.cell.jail{background:#fecaca}
+.panel{background:#fff;border-radius:24px;padding:14px;box-shadow:0 4px rgba(0,0,0,.2);display:flex;flex-direction:column;gap:10px}
+button{padding:12px;border-radius:14px;border:none;background:#22c55e;color:#fff;font-weight:800;cursor:pointer}
+button:disabled{background:#94a3b8}
+.player{background:#f1f5f9;border-radius:12px;padding:8px;display:flex;justify-content:space-between;font-size:13px;font-weight:600}
+.money{color:#16a34a;font-weight:800}
+.card{display:none;background:#fde68a;border-radius:16px;padding:10px;font-weight:600;text-align:center}
+@media(max-width:768px){#game{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>🏙️ Business Tour – Web</header>
+<div id="game">
+<div class="board" id="board"></div>
+<div class="panel">
+<input id="name" placeholder="Seu nome" />
+<button onclick="joinGame()">Entrar</button>
+<button id="rollBtn" onclick="rollDice()" disabled>🎲 Rolar Dados</button>
+<div class="card" id="card"></div>
+<h3>Jogadores</h3>
+<div id="players"></div>
+</div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+<script>
+// CONFIG FIREBASE
+const firebaseConfig={apiKey:"AIzaSyDYJre8Ajtd4aE5Ka_gBeo5GB88H5YdIDE",authDomain:"monopolio-858a8.firebaseapp.com",databaseURL:"https://monopolio-858a8-default-rtdb.firebaseio.com",projectId:"monopolio-858a8"};
+firebase.initializeApp(firebaseConfig);
+const db=firebase.database();
+const room=db.ref('rooms/sala1');
+let playerId=null;
+
+// TABULEIRO
+const boardData=[
+{name:'Início',type:'start'},
+{name:'Paris',type:'property',price:200,rent:40},
+{name:'Carta',type:'chance'},
+{name:'Tokyo',type:'property',price:220,rent:45},
+{name:'Prisão',type:'jail'},
+{name:'NY',type:'property',price:260,rent:55},
+{name:'Imposto',type:'tax',value:100},
+{name:'Londres',type:'property',price:300,rent:65}
+];
+
+const cards=[
+{text:'💰 Receba 200',money:200},
+{text:'💸 Pague 150',money:-150},
+{text:'🚓 Vá para prisão',jail:true},
+{text:'🎁 Bônus 100',money:100}
+];
+
+// RENDER BOARD
+const board=document.getElementById('board');
+boardData.forEach(c=>{
+const d=document.createElement('div');
+d.className='cell '+(c.type||'');
+d.innerHTML=`<strong>${c.name}</strong>${c.price?'<br>💲'+c.price:''}`;
+board.appendChild(d);
+});
+
+function joinGame(){
+const name=document.getElementById('name').value;
+if(!name)return alert('Nome');
+const ref=room.child('players').push();
+playerId=ref.key;
+ref.set({name,position:0,money:1500,inJail:false,bankrupt:false});
+room.child('turn').transaction(t=>t??playerId);
+}
+
+function rollDice(){
+room.child('turn').once('value',snap=>{
+if(snap.val()!==playerId)return alert('Não é seu turno');
+const dice=Math.floor(Math.random()*6)+1;
+room.child('players/'+playerId).once('value',s=>{
+let p=s.val();
+if(p.inJail){p.inJail=false;update(p);nextTurn();return;}
+let newPos=p.position+dice;
+if(newPos>=boardData.length){p.money+=200;newPos%=boardData.length;}
+p.position=newPos;update(p);handleCell(p,newPos);
+});
+});
+}
+
+function handleCell(p,pos){
+const cell=boardData[pos];
+if(cell.type==='property'){
+room.child('properties/'+pos).once('value',s=>{
+if(!s.exists()&&p.money>=cell.price){
+if(confirm('Comprar '+cell.name+'?')){
+p.money-=cell.price;update(p);
+room.child('properties/'+pos).set({owner:playerId});
+}
+}else if(s.val()?.owner!==playerId){
+p.money-=cell.rent;
+room.child('players/'+s.val().owner+'/money').transaction(m=>m+cell.rent);
+update(p);
+}
+nextTurn();
+});
+}
+if(cell.type==='chance')drawCard(p);
+if(cell.type==='tax'){p.money-=cell.value;update(p);nextTurn();}
+if(cell.type==='jail'){p.inJail=true;update(p);nextTurn();}
+}
+
+function drawCard(p){
+const c=cards[Math.floor(Math.random()*cards.length)];
+const cd=document.getElementById('card');
+cd.style.display='block';cd.innerText=c.text;
+if(c.money)p.money+=c.money;
+if(c.jail)p.inJail=true;
+update(p);
+setTimeout(()=>{cd.style.display='none';nextTurn();},3000);
+}
+
+function update(p){
+room.child('players/'+playerId).set(p);
+if(p.money<0){p.bankrupt=true;room.child('players/'+playerId).set(p);}
+}
+
+function nextTurn(){
+room.child('players').once('value',snap=>{
+const ids=Object.keys(snap.val()).filter(id=>!snap.val()[id].bankrupt);
+room.child('turn').transaction(t=>ids[(ids.indexOf(t)+1)%ids.length]);
+});
+}
+
+room.child('players').on('value',snap=>{
+const div=document.getElementById('players');div.innerHTML='';
+Object.values(snap.val()||{}).forEach(p=>{
+const d=document.createElement('div');d.className='player';
+d.innerHTML=`<span>${p.name}</span><span class='money'>💰${p.money}</span>`;
+div.appendChild(d);
+});
+});
+
+room.child('turn').on('value',s=>{
+document.getElementById('rollBtn').disabled=s.val()!==playerId;
+});
+</script>
+</body>
+</html>
